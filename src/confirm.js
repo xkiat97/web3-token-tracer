@@ -1,17 +1,10 @@
-const { Web3 } = require("web3");
-
 async function getConfirmations(txHash) {
   try {
     // Instantiate web3 with WebSocket provider
-    const web3 = new Web3(
-      new Web3.providers.WebsocketProvider(
-        `${process.env.INFURA_WS_URL}/${process.env.INFURA_API_KEY}`
-      )
-    );
+    const web3 = require("./provider").getWeb3Provider();
 
     // Get transaction details
     const trx = await web3.eth.getTransaction(txHash);
-    console.log(trx);
 
     // Get current block number
     const currentBlock = await web3.eth.getBlockNumber();

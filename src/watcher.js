@@ -1,20 +1,32 @@
-const { Web3 } = require("web3");
-const validateTransaction = require("./validate");
-const confirmEtherTransaction = require("./confirm");
-const ETH_ERC20_ABI = require("./abis/eth-erc-20-abi.json");
+const { getERC20TokenContract } = require("./contract");
+const web3 = require("./provider").getWeb3Provider();
+const tronWeb = require("./provider").getTronProvider();
 
-// Instantiate web3 with WebSocket provider
-const web3 = new Web3(
-  new Web3.providers.WebsocketProvider(
-    `${process.env.INFURA_WS_URL}/${process.env.INFURA_API_KEY}`
-  )
-);
+const trxHash = '0x216db2f85ad838dfdeec510fc2fd49bbf2e68e80f33e7a92a2d62d8f90de205e';
+const tronTrxHash = process.env.TRON_TRX;
 
-async function test() {
-  const valid = confirmEtherTransaction(
-    "0x528db3f1a820d5b73837028eb040c98c202e18395c7e081cc4ee7e8460cc4523"
-  );
-  console.log(valid);
+async function testTRC20() {
+  const trxData = await tronWeb.getEventsByTransactionId({transactionID: tronTrxHash});
+  console.log(trxData);
+}
+
+async function testERC20() {
+  const trx = await web3.eth.getTransactionReceipt(trxHash);
+  console.log(trx);
+  if (trx.to && Array.isArray(trx.logs) && trx.logs.length) {
+    const contract = getERC20TokenContract(trx.to);
+    const { decimals, symbol } = await collectData(contract);
+    trx.logs.forEach(log => {
+      if (log.data && Array.isArray(log.topics) && log.topics.length === 3) {
+        const transactionData = decodeTransactionData(log.data, log.topics);
+        const amount = parseValueWithDecimals(transactionData.value, decimals);
+
+        console.log(
+          `TRX ${trxHash} - Transfer of ${amount} ${symbol} from ${transactionData.from} to ${transactionData.to}`
+        );
+      }
+    });
+  }
   return;
 }
 
@@ -30,104 +42,33 @@ async function watchEtherTransfers() {
   subscription.on("connected", (nr) =>
     console.log("Subscription on ERC-20 started with ID %s", nr)
   );
-  subscription.on("data", (event) => {
-    if (event.topics.length == 3) {
-      try {
-        const transactionData = decodeTransactionData(event);
-        const contract = new web3.eth.Contract(ETH_ERC20_ABI, event.address);
-        collectData(contract).then((contractData) => {
-          const amount = contractData.decimals; //web3.toWei(contractData.decimals * 1e18);
-          console.log(
-            `Trx: ${event.transactionHash} - Transfer of ${amount} ${contractData.symbol} from ${transactionData.from} to ${transactionData.to}`
-          );
-        });
-      } catch (ex) {
-        console.log(ex);
-      }
-    }
-  });
-  // Subscribe to pending transactions
-  // subscription
-  //   .subscribe((error, result) => {
-  //     if (error) console.log(error);
-  //   })
-  //   .on("data", async (txHash) => {
-  //     try {
-  //       // Instantiate web3 with HttpProvider
-  //       const web3Http = new Web3(process.env.INFURA_URL);
-
-  //       // Get transaction details
-  //       const trx = await web3Http.eth.getTransaction(txHash);
-
-  //       const valid = validateTransaction(trx);
-  //       // If transaction is not valid, simply return
-  //       if (!valid) return;
-
-  //       console.log(
-  //         "Found incoming Ether transaction from " +
-  //           process.env.WALLET_FROM +
-  //           " to " +
-  //           process.env.WALLET_TO
-  //       );
-  //       console.log("Transaction value is: " + process.env.AMOUNT);
-  //       console.log("Transaction hash is: " + txHash + "\n");
-
-  //       // Initiate transaction confirmation
-  //       confirmEtherTransaction(txHash);
-
-  //       // Unsubscribe from pending transactions.
-  //       subscription.unsubscribe();
-  //     } catch (error) {
-  //       console.log(error);
-  //     }
-  //   });
+  subscription.on("data", onLogsChanged);
 }
 
-function watchTokenTransfers() {
-  // Instantiate token contract object with JSON ABI and address
-  const tokenContract = new web3.eth.Contract(
-    TOKEN_ABI,
-    process.env.TOKEN_CONTRACT_ADDRESS,
-    (error, result) => {
-      if (error) console.log(error);
-    }
-  );
-
-  // Generate filter options
-  const options = {
-    filter: {
-      _from: process.env.WALLET_FROM,
-      _to: process.env.WALLET_TO,
-      _value: process.env.AMOUNT,
-    },
-    fromBlock: "latest",
-  };
-
-  // Subscribe to Transfer events matching filter criteria
-  tokenContract.events.Transfer(options, async (error, event) => {
-    if (error) {
-      console.log(error);
-      return;
-    }
+async function onLogsChanged(event) {
+  try {
+    const contract = getERC20TokenContract(event.address);
+    const transactionData = decodeTransactionData(event.data, event.topics);
+    const { decimals, symbol } = await collectData(contract);
+    const amount = (new Decimal(Number(transactionData.value))).dividedBy(Math.pow(10, decimals));
 
     console.log(
-      "Found incoming Pluton transaction from " +
-        process.env.WALLET_FROM +
-        " to " +
-        process.env.WALLET_TO +
-        "\n"
+      `Trx: ${event.transactionHash} - Transfer of ${amount} ${symbol} from ${transactionData.from} to ${transactionData.to}`
     );
-    console.log("Transaction value is: " + process.env.AMOUNT);
-    console.log("Transaction hash is: " + txHash + "\n");
+  } catch (ex) {
 
-    // Initiate transaction confirmation
-    confirmEtherTransaction(event.transactionHash);
-
-    return;
-  });
+  }
 }
 
-function decodeTransactionData(event) {
+async function collectData(contract) {
+  const [decimals, symbol] = await Promise.all([
+    contract.methods.decimals().call(),
+    contract.methods.symbol().call(),
+  ]);
+  return { decimals, symbol };
+}
+
+function decodeTransactionData(data, topics) {
   const transaction = web3.eth.abi.decodeLog(
     [
       {
@@ -146,21 +87,26 @@ function decodeTransactionData(event) {
         indexed: false,
       },
     ],
-    event.data,
-    [event.topics[0], event.topics[1], event.topics[2]]
+    data,
+    [topics[0], topics[1], topics[2]]
   );
   return transaction;
 }
 
-async function collectData(contract) {
-  const [decimals, symbol] = await Promise.all([
-    contract.methods.decimals().call(),
-    contract.methods.symbol().call(),
-  ]);
-  return { decimals, symbol };
+function parseValueWithDecimals(value, decimals){
+  let number = Number(value) || 0;
+
+  if(decimals > 0){
+    for(let i = 1; i <= decimals; i++){
+      number /= 10;
+    }
+  }
+  
+  return number;
 }
+
 module.exports = {
   watchEtherTransfers,
-  watchTokenTransfers,
-  test,
+  testERC20,
+  testTRC20,
 };

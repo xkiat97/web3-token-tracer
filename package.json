@@ -10,8 +10,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "api": "^6.0.0",
     "decimal.js": "^10.4.3",
     "dotenv": "^16.3.1",
+    "tronweb": "^5.2.0",
     "web3": "^4.0.2"
   }
 }
